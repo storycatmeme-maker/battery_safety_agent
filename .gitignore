@@ -1,0 +1,24 @@
+# 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Streamlit / 运行时
+.streamlit/
+
+# 数据（原始与处理后的数据不入库，用脚本重新生成/下载）
+data/raw/*.mat
+data/processed/*.csv
+
+# 报告与输出
+reports/*.pdf
+reports/*.md
+output/
+
+# IDE
+.vscode/
+.idea/

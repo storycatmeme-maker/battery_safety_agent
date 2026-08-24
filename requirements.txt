@@ -1,0 +1,11 @@
+# battery_safety_agent 环境依赖（Python 3.13 已验证兼容）
+# 若某个固定版本安装失败，把该行版本号去掉重装即可（pip 会自动选兼容版）
+numpy==2.2.6
+pandas==2.2.3
+scipy==1.15.3
+scikit-learn==1.6.1
+matplotlib==3.10.0
+streamlit==1.45.1
+plotly==5.24.1
+reportlab==4.3.1
+pytest==8.3.4
