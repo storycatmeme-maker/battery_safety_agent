@@ -305,9 +305,24 @@ class BatteryPreprocessor:
         n = len(g)
 
         # 1) 行级时间间隔与“通讯离线”（缺行）判定
+        #    ★自适应阈值：不同数据集的采样周期差异很大（NASA 约 5s、CALCE 约 30s）。
+        #    若数据自身采样周期就已超过配置阈值，则按采样周期等比放大，
+        #    否则正常采样间隔会被全部误判为“通讯离线”。
         gap_to_prev = np.diff(ts, prepend=ts[0] if n else 0.0).astype("float64")
         gap_to_prev[0] = 0.0
-        row_loss = gap_to_prev > self.data_loss_min_s
+        dt_nom = float(np.median(gap_to_prev[1:])) if n > 1 else 0.0
+        loss_min = self.data_loss_min_s
+        interp_limit = self.gap_warn_max_s
+        warn_limit = self.gap_interp_max_s
+        if dt_nom > self.data_loss_min_s:
+            loss_min = max(loss_min, 3.0 * dt_nom)
+            interp_limit = max(interp_limit, 2.0 * dt_nom)
+            warn_limit = max(warn_limit, dt_nom)
+            warnings.append(
+                f"cell {cell_id}: 采样周期 {dt_nom:.1f}s 超过断点阈值 {self.data_loss_min_s:g}s，"
+                f"已自适应调整（插值≤{interp_limit:.0f}s，离线判定>{loss_min:.0f}s）"
+            )
+        row_loss = gap_to_prev > loss_min
         loss_duration = np.where(row_loss, gap_to_prev, 0.0).astype("float64")
 
         # 2) 逐列处理 NaN 段（插值 / 离线）
@@ -319,9 +334,9 @@ class BatteryPreprocessor:
             filled, imask, lmask, ldur, nwarn = _fill_nan_small_gaps(
                 raw,
                 ts,
-                interp_limit_s=self.gap_warn_max_s,
-                loss_min_s=self.data_loss_min_s,
-                warn_limit_s=self.gap_interp_max_s,
+                interp_limit_s=interp_limit,
+                loss_min_s=loss_min,
+                warn_limit_s=warn_limit,
             )
             g[col] = filled
             g[f"{col}_raw"] = raw
@@ -335,7 +350,7 @@ class BatteryPreprocessor:
         n_loss_events = int(np.sum(loss_total & ~np.roll(loss_total, 1)))
         if n_loss_events:
             warnings.append(
-                f"cell {cell_id}: 检测到 {n_loss_events} 次通讯离线（>={self.data_loss_min_s:g}s，未插值）"
+                f"cell {cell_id}: 检测到 {n_loss_events} 次通讯离线（>={loss_min:g}s，未插值）"
             )
 
         # 3) 滑动中值滤波 + 毛刺剔除（电压/温度）：逐行布尔标记

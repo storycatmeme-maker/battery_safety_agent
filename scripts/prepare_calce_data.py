@@ -52,7 +52,7 @@ def _cell_dir(root: Path, cell: str) -> Path:
     raise FileNotFoundError(f"在 {direct} 下找不到 .xlsx 文件")
 
 
-def load_cell(cell: str, root: Path, ambient_temp: float) -> pd.DataFrame:
+def load_cell(cell: str, root: Path, ambient_temp: float, grid_s: float = 0.0) -> pd.DataFrame:
     """把一颗电芯的多个 xlsx 合并成连续时间序列。"""
     cdir = _cell_dir(root, cell)
     files = sorted(glob.glob(str(cdir / "*.xlsx")))
@@ -60,6 +60,7 @@ def load_cell(cell: str, root: Path, ambient_temp: float) -> pd.DataFrame:
 
     parts = []
     offset = 0.0
+    cycle_offset = 0.0   # ★ 每个 Excel 文件的 Cycle_Index 都从 1 重新计数，需累计成全局循环数
     for f in files:
         xl = pd.ExcelFile(f)
         sheet = _find_channel_sheet(xl)
@@ -72,22 +73,43 @@ def load_cell(cell: str, root: Path, ambient_temp: float) -> pd.DataFrame:
         t0 = float(np.nanmin(t))
         t_rel = t - t0 + offset
         offset = float(np.nanmax(t_rel))
+        cyc_local = pd.to_numeric(x.get("Cycle_Index"), errors="coerce").fillna(0.0).to_numpy(dtype=float)
         parts.append(pd.DataFrame({
             "timestamp": t_rel,
             "cell_id": cell,
             "voltage": pd.to_numeric(x["Voltage(V)"], errors="coerce").to_numpy(dtype=float),
             "current": pd.to_numeric(x["Current(A)"], errors="coerce").to_numpy(dtype=float),
             "temp": np.full(len(x), float(ambient_temp)),   # 无温度通道 -> 恒温占位
-            "cycle": pd.to_numeric(x.get("Cycle_Index"), errors="coerce").to_numpy(dtype=float),
+            "cycle": cyc_local + cycle_offset,             # 全局累计循环数
             "source_file": os.path.basename(f),
         }))
+        cycle_offset += float(np.nanmax(cyc_local)) if np.isfinite(np.nanmax(cyc_local)) else 0.0
     if not parts:
         raise ValueError(f"{cell}: 没有解析到任何数据")
     out = pd.concat(parts, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
-    print(f"    -> {len(out):,} 行，时间跨度 {out['timestamp'].max()/3600:.1f} 小时，"
-          f"电压 {out['voltage'].min():.3f}~{out['voltage'].max():.3f} V，"
-          f"电流 {out['current'].min():.2f}~{out['current'].max():.2f} A")
-    return out
+    out = out.drop_duplicates(subset="timestamp", keep="first").reset_index(drop=True)
+
+    # ★ 对齐到公共时间网格
+    #   不同电芯的采样时刻存在微小差异（如 1020.484s vs 1020.520s），
+    #   若不对齐，跨电芯的“同一时刻比较”会退化成单电芯、ΔV 恒为 0。
+    ts_arr = out["timestamp"].to_numpy(dtype=float)
+    dt_med = float(np.median(np.diff(ts_arr))) if len(ts_arr) > 1 else 1.0
+    step = float(grid_s) if grid_s and grid_s > 0 else max(round(dt_med, 3), 0.001)
+    grid = np.arange(0.0, float(ts_arr.max()) + step, step)
+    cyc = pd.to_numeric(out["cycle"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    res = pd.DataFrame({
+        "timestamp": np.round(grid, 3),
+        "cell_id": cell,
+        "voltage": np.interp(grid, ts_arr, out["voltage"].to_numpy(dtype=float)),
+        "current": np.interp(grid, ts_arr, out["current"].to_numpy(dtype=float)),
+        "temp": np.full(len(grid), float(ambient_temp)),
+        "cycle": np.interp(grid, ts_arr, cyc),
+    })
+    print(f"    -> 原始 {len(out):,} 行，对齐到 {step:.1f}s 网格后 {len(res):,} 行；"
+          f"时间跨度 {res['timestamp'].max()/3600:.1f} 小时；"
+          f"电压 {res['voltage'].min():.3f}~{res['voltage'].max():.3f} V；"
+          f"电流 {res['current'].min():.2f}~{res['current'].max():.2f} A")
+    return res
 
 
 def main() -> int:
@@ -95,6 +117,8 @@ def main() -> int:
     ap.add_argument("--root", default=str(ROOT / "data" / "raw" / "calce"))
     ap.add_argument("--cells", nargs="+", required=True, help="电芯编号，如 CS2_35 CS2_36")
     ap.add_argument("--out", default=str(ROOT / "data" / "processed" / "calce_pack.csv"))
+    ap.add_argument("--grid-s", type=float, default=0.0,
+                    help="公共时间网格步长[s]；0=自动按采样周期推断")
     ap.add_argument("--ambient-temp", type=float, default=25.0,
                     help="该数据集无温度通道，用此环境温度填充（默认 25°C）")
     args = ap.parse_args()
@@ -104,7 +128,7 @@ def main() -> int:
     frames = []
     for cell in args.cells:
         try:
-            frames.append(load_cell(cell, root, args.ambient_temp))
+            frames.append(load_cell(cell, root, args.ambient_temp, grid_s=args.grid_s))
         except Exception as exc:
             print(f"  [warn] {cell} 读取失败: {exc}", file=sys.stderr)
     if not frames:
