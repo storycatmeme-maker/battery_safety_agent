@@ -75,6 +75,13 @@ def run_safety_inspection_skill(
     preprocessor = BatteryPreprocessor(nominal_capacity_ah=nominal_capacity_ah, **preproc_kwargs)
     cleaned, quality = preprocessor.process(data_path)
 
+    # 护栏：一致性分析需要 >=2 颗电芯（组内中位数无定义时会产生无意义告警）
+    if quality.n_cells < 2:
+        quality.warnings.append(
+            f"仅检测到 {quality.n_cells} 颗电芯：一致性分析需要 >=2 颗电芯，"
+            "本次结果中的一致性类告警（ΔV/极差）不具物理意义，请补充多电芯数据后复核。"
+        )
+
     # ---- 2. 特征工程 ----
     extractor = BatteryFeatureExtractor(nominal_capacity_ah=nominal_capacity_ah)
     features, units = extractor.extract(cleaned)
