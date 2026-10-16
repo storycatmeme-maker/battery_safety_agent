@@ -109,3 +109,37 @@ def inject_voltage_spikes(
         "injected": True,
     }
     return df, meta
+
+def inject_micro_short(
+    df: pd.DataFrame,
+    cell_id: str,
+    t_start: float,
+    duration_s: float = 600.0,
+    decay_mv_per_min: float = 15.0,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """注入静置期微短路：端电压以 decay_mv_per_min 速率持续跌落。
+
+    物理依据：内短路/析锂会在静置阶段形成持续的微小自放电电流，
+    表现为端电压异常快速跌落（健康电芯静置时应缓慢回落趋于稳定）。
+    用于验证 feature_engine 的静置松弛斜率特征（relax_dV_dt）。
+    """
+    df = df.copy()
+    mask = (
+        (df["cell_id"] == cell_id)
+        & (df["timestamp"] >= t_start)
+        & (df["timestamp"] < t_start + duration_s)
+    )
+    t = df.loc[mask, "timestamp"].to_numpy(dtype="float64")
+    df.loc[mask, "voltage"] = df.loc[mask, "voltage"] - (
+        decay_mv_per_min / 1000.0
+    ) * ((t - t_start) / 60.0)
+    meta = {
+        "type": "micro_short",
+        "cell_id": str(cell_id),
+        "t_start": float(t_start),
+        "t_end": float(t_start + duration_s),
+        "duration_s": float(duration_s),
+        "decay_mv_per_min": float(decay_mv_per_min),
+        "injected": True,
+    }
+    return df, meta

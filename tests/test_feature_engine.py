@@ -56,3 +56,41 @@ def test_valid_only_filtering(cleaned_pack):
     feats_all, _ = BatteryFeatureExtractor().extract(cleaned_pack, use_valid_only=False)
     feats_valid, _ = BatteryFeatureExtractor().extract(cleaned_pack, use_valid_only=True)
     assert len(feats_valid) < len(feats_all)
+
+def test_relaxation_slope_feature_exists(cleaned_pack):
+    from src.feature_engine import BatteryFeatureExtractor
+    feats, units = BatteryFeatureExtractor().extract(cleaned_pack)
+    assert "relax_dV_dt" in feats.columns
+    assert "relax_slope_dev" in feats.columns
+    assert "relax_dV_dt" in units
+    # 充电后的静置段应当被识别为松弛期
+    assert feats["relax_dV_dt"].notna().any()
+
+
+def test_relaxation_slope_responds_to_micro_short():
+    """注入静置期微短路后，该电芯的松弛斜率应明显变负，且不影响其他电芯。"""
+    from src.fault_injection import inject_micro_short
+    from src.preprocessor import BatteryPreprocessor
+    from src.feature_engine import BatteryFeatureExtractor
+    from conftest import make_synthetic_pack
+
+    raw = make_synthetic_pack(n_cells=3, n_cycles=2)
+    # 定位第 1 个“充电->静置”窗口
+    base, _ = BatteryPreprocessor().process(raw)
+    f0, _ = BatteryFeatureExtractor().extract(base)
+    rest = f0[f0["relax_dV_dt"].notna()]
+    t0 = float(rest["timestamp"].min())
+
+    inj, _meta = inject_micro_short(raw, "C1", t0, duration_s=55.0, decay_mv_per_min=30.0)
+    cleaned, _ = BatteryPreprocessor().process(inj)
+    f1, _ = BatteryFeatureExtractor().extract(cleaned)
+
+    def mean_slope(frame, cell):
+        w = frame[(frame["cell_id"] == cell) & (frame["timestamp"] >= t0)
+                  & frame["relax_dV_dt"].notna()]
+        return float(w["relax_dV_dt"].mean())
+
+    normal_c1, normal_c2 = mean_slope(f0, "C1"), mean_slope(f0, "C2")
+    after_c1, after_c2 = mean_slope(f1, "C1"), mean_slope(f1, "C2")
+    assert after_c1 < normal_c1 - 0.005, f"注入后 C1 松弛斜率应变负：{normal_c1:.4f} -> {after_c1:.4f}"
+    assert abs(after_c2 - normal_c2) < 0.005, f"对照电芯 C2 不应受影响：{normal_c2:.4f} -> {after_c2:.4f}"

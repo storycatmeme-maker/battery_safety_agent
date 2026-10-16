@@ -37,6 +37,8 @@ FEATURE_UNITS: Dict[str, Tuple[str, str]] = {
     "pack_spread_T": ("°C", "组内温度极差（滑动窗口内 Tmax-Tmin），散热一致性"),
     "pack_spread_V": ("V", "组内电压极差（滑动窗口内 Vmax-Vmin），一致性发散"),
     "c_rate": ("1/h", "电流倍率 I/Cn，工况上下文"),
+    "relax_dV_dt": ("V/min", "充电结束静置段内的端电压变化率（微短路/析锂敏感指标）"),
+    "relax_slope_dev": ("V/min", "松弛斜率相对组内中位数的偏离度（一致性视角）"),
 }
 
 
@@ -57,12 +59,14 @@ class BatteryFeatureExtractor:
         spread_rolling: int = 12,
         max_slope_gap_s: float = 30.0,
         align_timestamp_s: float = 1.0,
+        relax_window_s: float = 600.0,
     ) -> None:
         self.nominal_capacity_ah = nominal_capacity_ah
         self.dtdt_smooth_window = dtdt_smooth_window
         self.spread_rolling = spread_rolling
         self.max_slope_gap_s = max_slope_gap_s
         self.align_timestamp_s = align_timestamp_s
+        self.relax_window_s = relax_window_s
 
     def extract(
         self, cleaned: pd.DataFrame, use_valid_only: bool = True
@@ -125,7 +129,36 @@ class BatteryFeatureExtractor:
         df["delta_V"] = df["voltage"] - df["_med_v"]
         df["delta_T"] = df["temp"] - df["_med_t"]
 
-        # 4) 滑动极差（组内发散度，窗口内取峰值）
+        # 4) 静置自松弛斜率 [V/min]
+        #    物理意义：电芯充满后静置，端电压因极化消除而缓慢回落趋于稳定；
+        #    若存在微短路/析锂，端电压会异常快速跌落。
+        #    只统计“充电 -> 静置”切换后 relax_window_s 内的静置样本；
+        #    并给出相对组内中位数的偏离度（一致性视角）。
+        if "regime" in df.columns:
+            ts_arr = df["timestamp"].to_numpy(dtype=float)
+            is_rest = (df["regime"] == "rest").to_numpy()
+            prev_regime = df.groupby("cell_id", sort=False)["regime"].shift(1).to_numpy()
+            starts = is_rest & (prev_regime == "charge")
+            anchor = pd.Series(
+                np.where(starts, ts_arr, np.nan), index=df.index
+            ).groupby(df["cell_id"], sort=False).ffill().to_numpy()
+            in_relax = (
+                is_rest
+                & np.isfinite(anchor)
+                & ((ts_arr - anchor) <= self.relax_window_s)
+            )
+            seg_id = df["cell_id"].astype(str) + "#" + pd.Series(anchor, index=df.index).astype(str)
+            dV = df.groupby(seg_id, sort=False)["voltage"].diff()
+            dtv = df.groupby(seg_id, sort=False)["timestamp"].diff()
+            slope = (dV / dtv * 60.0).where(dtv <= self.max_slope_gap_s)
+            df["relax_dV_dt"] = np.where(in_relax, slope, np.nan)
+            med = df.groupby("timestamp")["relax_dV_dt"].transform("median")
+            df["relax_slope_dev"] = (df["relax_dV_dt"] - med).fillna(0.0)
+        else:
+            df["relax_dV_dt"] = np.nan
+            df["relax_slope_dev"] = 0.0
+
+        # 5) 滑动极差（组内发散度，窗口内取峰值）
         df["pack_spread_V"] = (
             df.groupby("cell_id")["_spread_v"]
             .transform(lambda s: s.rolling(self.spread_rolling, min_periods=1).max())
@@ -139,6 +172,7 @@ class BatteryFeatureExtractor:
             "timestamp", "cell_id", "cycle", "phase", "regime",
             "voltage", "current", "temp", "c_rate",
             "dT_dt", "delta_V", "delta_T", "pack_spread_T", "pack_spread_V",
+            "relax_dV_dt", "relax_slope_dev",
         ]
         out_cols = [c for c in out_cols if c in df.columns]
         return df[out_cols].reset_index(drop=True), dict(FEATURE_UNITS)
