@@ -55,7 +55,7 @@ def validate_result_schema(report: Dict[str, Any]) -> None:
 
 def run_safety_inspection_skill(
     data_path: Union[str, Path, pd.DataFrame],
-    sensitivity: float = 0.95,
+    sensitivity: float = 0.99,
     out_format: str = "json",
     out_dir: Optional[Union[str, Path]] = None,
     nominal_capacity_ah: float = 2.0,
@@ -133,7 +133,7 @@ def main(argv: Optional[list] = None) -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--data", required=True, help="长表 CSV 路径")
-    parser.add_argument("--sensitivity", type=float, default=0.95, help="检测灵敏度 [0,1]")
+    parser.add_argument("--sensitivity", type=float, default=0.99, help="检测灵敏度 [0,1]")
     parser.add_argument("--format", choices=["json", "md", "pdf", "none"], default="json")
     parser.add_argument("--outdir", default="reports", help="输出目录")
     parser.add_argument("--capacity", type=float, default=2.0, help="电芯标称容量 [Ah]")

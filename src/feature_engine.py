@@ -56,11 +56,13 @@ class BatteryFeatureExtractor:
         dtdt_smooth_window: int = 5,
         spread_rolling: int = 12,
         max_slope_gap_s: float = 30.0,
+        align_timestamp_s: float = 1.0,
     ) -> None:
         self.nominal_capacity_ah = nominal_capacity_ah
         self.dtdt_smooth_window = dtdt_smooth_window
         self.spread_rolling = spread_rolling
         self.max_slope_gap_s = max_slope_gap_s
+        self.align_timestamp_s = align_timestamp_s
 
     def extract(
         self, cleaned: pd.DataFrame, use_valid_only: bool = True
@@ -80,6 +82,15 @@ class BatteryFeatureExtractor:
             raise ValueError("有效样本为空（全部被 data_loss/过渡区排除）。")
 
         df = df.sort_values(["timestamp", "cell_id"]).reset_index(drop=True)
+
+        # 0) 时间戳离散化对齐（防 pivot 失效）
+        #    不同电芯的浮点时间戳可能在末位相差毫秒级（如 10.001 与 10.000），
+        #    直接 pivot 会被当成两个不同时刻，导致同一时刻只剩单颗电芯、
+        #    ΔV/极差大面积失效。这里先对齐到 align_timestamp_s 网格。
+        if self.align_timestamp_s and self.align_timestamp_s > 0:
+            df["timestamp"] = (
+                (df["timestamp"] / self.align_timestamp_s).round() * self.align_timestamp_s
+            )
 
         # 1) C 倍率
         df["c_rate"] = df["current"] / self.nominal_capacity_ah

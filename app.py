@@ -213,7 +213,7 @@ with st.sidebar:
     st.header("⚙️ 控制台")
     data_path = st.text_input("数据文件路径", value=str(DEFAULT_DATA))
     scenario = st.selectbox("演示场景", list(SCENARIOS.keys()))
-    sensitivity = st.slider("检测灵敏度 (sensitivity)", 0.5, 1.0, 0.95, 0.01)
+    sensitivity = st.slider("检测严格度（基线分位点，越大越严格）", 0.90, 1.0, 0.99, 0.005)
     t_start = st.number_input("故障注入起始时间 (s)", min_value=0.0, value=20000.0, step=100.0)
     duration_s = st.number_input("热失控注入时长 (s)", min_value=60.0, value=600.0, step=60.0)
     run_btn = st.button("🚀 运行诊断", type="primary", use_container_width=True)

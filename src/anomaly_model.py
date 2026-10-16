@@ -79,7 +79,7 @@ class HybridAnomalyDetector:
 
     def __init__(
         self,
-        sensitivity: float = 0.95,
+        sensitivity: float = 0.99,
         contamination: float = 0.05,
         rule_sigma: float = 3.0,
         min_sustain_samples: int = 3,
@@ -87,6 +87,7 @@ class HybridAnomalyDetector:
         rule_window: int = 1200,
         rule_min_period: int = 240,
         min_voltage_spread_v: float = 0.05,
+        dv_floor_v: float = 0.10,
         dtdt_floor_cmin: float = 2.0,
         transition_suppress_s: float = 30.0,
         merge_gap_s: float = 120.0,
@@ -102,6 +103,7 @@ class HybridAnomalyDetector:
         self.rule_window = rule_window
         self.rule_min_period = rule_min_period
         self.min_voltage_spread_v = min_voltage_spread_v
+        self.dv_floor_v = dv_floor_v
         self.dtdt_floor_cmin = dtdt_floor_cmin
         self.transition_suppress_s = transition_suppress_s
         self.merge_gap_s = merge_gap_s
@@ -109,6 +111,10 @@ class HybridAnomalyDetector:
 
         self._scaler = StandardScaler()
         self._model: IsolationForest | None = None
+        # 阈值与归一化区间在 fit() 阶段由健康基线固化，score() 只做应用，
+        # 避免“用测试集自身分布定阈值”造成的数据泄露/漏报。
+        self.ai_lo_: float = 0.0
+        self.ai_hi_: float = 1.0
         self.ai_threshold_: float = 0.5
 
     # ------------------------------------------------------------------ #
@@ -127,6 +133,23 @@ class HybridAnomalyDetector:
             n_jobs=-1,
         )
         self._model.fit(Xs)
+
+        # ★ 阈值标定（修复数据泄露）：用健康基线的打分分布固化归一化区间与告警阈值。
+        #   这样阈值不再随“当前这批数据”浮动：
+        #     - 整包健康时不会硬凑出 5% 的假异常；
+        #     - 整包恶化时也不会把阈值整体抬高而漏报。
+        base_raw = -self._model.decision_function(Xs)
+        # 归一化区间取 [P0.1, P99.9] 而不是 [P1, P99]：
+        # 若区间与阈值分位点重合（如都用 99），阈值会饱和到 1.0，
+        # 导致 AI 引擎在严格模式下永久失效（实测灵敏度 0.99 时 ai_flag 恒为 0）。
+        self.ai_lo_ = float(np.percentile(base_raw, 0.1))
+        self.ai_hi_ = float(np.percentile(base_raw, 99.9))
+        span = self.ai_hi_ - self.ai_lo_
+        if span > 1e-12:
+            base_score = np.clip((base_raw - self.ai_lo_) / span, 0.0, 1.0)
+        else:
+            base_score = np.zeros_like(base_raw)
+        self.ai_threshold_ = float(np.quantile(base_score, self.sensitivity))
         return self
 
     def score(self, features: pd.DataFrame) -> pd.DataFrame:
@@ -139,11 +162,16 @@ class HybridAnomalyDetector:
         Xs = self._scaler.transform(X)
 
         # ---- AI 引擎：异常分数（越大越异常，归一化到 [0,1]） ----
+        # 归一化区间与阈值均来自 fit() 阶段的健康基线（固定不变），
+        # 不再使用当前这批数据自身的分位数（避免数据泄露与自适应漏报）。
         raw = -self._model.decision_function(Xs)
-        lo, hi = float(np.percentile(raw, 1)), float(np.percentile(raw, 99))
-        score = np.clip((raw - lo) / (hi - lo) if hi > lo else 0.0, 0.0, 1.0)
+        span = self.ai_hi_ - self.ai_lo_
+        score = (
+            np.clip((raw - self.ai_lo_) / span, 0.0, 1.0)
+            if span > 1e-12
+            else np.zeros_like(raw)
+        )
         df["anomaly_score"] = score
-        self.ai_threshold_ = float(np.quantile(score, self.sensitivity))
         df["ai_flag"] = score >= self.ai_threshold_
 
         # ---- 工况切换抑制窗：切换后 N 秒内不参与告警（防电流阶跃毛刺误报） ----
@@ -190,13 +218,26 @@ class HybridAnomalyDetector:
         sustain_dtdt = grp_eff["rule_dtdt_flag"].transform(
             lambda s: s.rolling(self.min_sustain_samples, min_periods=1).sum()
         )
+        sustain_dv = grp_eff["rule_dv_flag"].transform(
+            lambda s: s.rolling(self.min_sustain_samples, min_periods=1).sum()
+        )
         df["rule_sustained"] = (sustain_any >= self.min_sustain_samples).to_numpy()
         df["dtdt_sustained"] = (sustain_dtdt >= self.min_sustain_samples).to_numpy()
+        df["dv_sustained"] = (sustain_dv >= self.min_sustain_samples).to_numpy()
 
         # ---- 综合等级 ----
-        # 二级预警：AI 确认 + 温升异常持续（疑似内短路/热失控前兆）
-        # 一级关注：AI 或任一物理规则触发（含一致性/内阻发散）
-        level2 = ai_eff & df["dtdt_sustained"].to_numpy()
+        # 二级预警（物理机理判据，AI 不参与否决）：
+        #   a) 温升速率持续超出动态包络且超过物理下限 -> 疑似内短路/热失控前兆
+        #   b) 单体压差持续超包络且超过硬阈值 -> 疑似严重内阻发散/析锂
+        #   ★ 设计说明：AI（隔离森林）擅长发现“未知模式”，但对“单特征突变”不敏感，
+        #     若强制要求 AI 与物理规则同时成立，会造成漏报（实测：注入热失控前兆时
+        #     AI 分数 0.80 < 阈值 1.00，物理规则已 86% 命中却被否决）。
+        #     因此二级预警只看物理机理判据，AI 用于发现未知异常（一级关注）。
+        severe_dt = df["dtdt_sustained"].to_numpy()
+        severe_dv = df["dv_sustained"].to_numpy() & (
+            df["delta_V"].abs().to_numpy() > self.dv_floor_v
+        )
+        level2 = severe_dt | severe_dv
         level1 = (ai_eff | df["rule_sustained"].to_numpy()) & ~level2
         level = np.where(level2, LEVEL_WARNING, np.where(level1, LEVEL_WATCH, LEVEL_NORMAL))
         df["level"] = level
@@ -232,8 +273,18 @@ class HybridAnomalyDetector:
                     }
                 )
 
-        if any(e.level >= LEVEL_WARNING for e in events):
-            status = "二级预警（疑似内短路/热失控前兆）"
+        # 二级预警按“触发机理”区分文案：温升异常 / 压差严重发散
+        l2 = result[result["level"] >= LEVEL_WARNING]
+        dt_hit = bool(l2["dtdt_sustained"].any()) if len(l2) else False
+        dv_hit = bool(
+            (l2["dv_sustained"] & (l2["delta_V"].abs() > self.dv_floor_v)).any()
+        ) if len(l2) else False
+        if dt_hit and dv_hit:
+            status = "二级预警（温升+压差异常·疑似内短路/热失控前兆）"
+        elif dt_hit:
+            status = "二级预警（温升异常·疑似内短路/热失控前兆）"
+        elif dv_hit:
+            status = "二级预警（压差严重发散·疑似内阻异常/析锂）"
         elif abnormal:
             status = "一级关注（需人工复核）"
         else:
@@ -247,6 +298,7 @@ class HybridAnomalyDetector:
             "max_pack_spread_T": round(float(result["pack_spread_T"].max()), 3),
             "events": [e.to_dict() for e in events],
             "ai_threshold": round(float(self.ai_threshold_), 4),
+            "warning_mechanisms": [m for m, hit in (("thermal", dt_hit), ("voltage", dv_hit)) if hit],
         }
 
     # ------------------------------------------------------------------ #
@@ -314,7 +366,7 @@ class HybridAnomalyDetector:
 
 def run_hybrid_detection(
     features: pd.DataFrame,
-    sensitivity: float = 0.95,
+    sensitivity: float = 0.99,
     warmup_samples: int = 2000,
     **kwargs: Any,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
