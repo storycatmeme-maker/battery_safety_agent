@@ -124,6 +124,7 @@ class BatterySafetyReporter:
             "max_abs_delta_v": summary.get("max_abs_delta_v", 0.0),
             "max_pack_spread_T": summary.get("max_pack_spread_T", 0.0),
             "events": summary.get("events", []),
+            "warning_mechanisms": summary.get("warning_mechanisms", []),
             "root_cause_prediction": predict_root_cause(summary, quality),
             "recommendations": build_recommendations(summary),
         }

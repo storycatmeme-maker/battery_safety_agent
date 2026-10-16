@@ -95,9 +95,13 @@ class BatteryFeatureExtractor:
         # 1) C 倍率
         df["c_rate"] = df["current"] / self.nominal_capacity_ah
 
-        # 2) 温升速率 dT/dt [°C/min]（每电芯一阶差分 + 平滑）
-        dT = df.groupby("cell_id")["temp"].diff()
-        dt = df.groupby("cell_id")["timestamp"].diff()
+        # 2) 温升速率 dT/dt [°C/min]（同一电芯、同一循环、同一相内做一阶差分 + 平滑）
+        #    ★ 必须在同段内差分：多段数据拼接时，段与段之间存在时间跳变，
+        #      跨段差分会产生 ±7°C/min 的假温升（实测：三颗电芯在拼接点同时“跳温”1°C），
+        #      从而造成“热失控前兆”误报。
+        seg_keys = ["cell_id"] + [c for c in ("cycle", "phase") if c in df.columns]
+        dT = df.groupby(seg_keys, sort=False)["temp"].diff()
+        dt = df.groupby(seg_keys, sort=False)["timestamp"].diff()
         dT_dt = (dT / dt * 60.0).where(dt <= self.max_slope_gap_s).fillna(0.0)
         df["dT_dt"] = (
             dT_dt.groupby(df["cell_id"])
