@@ -27,3 +27,6 @@ reports/
 # IDE
 .vscode/
 .idea/
+
+# 个人材料（简历生成脚本）
+scripts/build_resume.py
