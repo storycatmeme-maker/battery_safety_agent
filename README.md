@@ -34,7 +34,7 @@ flowchart LR
     A3[其他厂商 CSV] --> B3[adapt_vendor_csv]
     B1 & B2 & B3 --> C[preprocessor<br/>清洗/插值/data_loss/工况切分]
     C --> D[feature_engine<br/>dT_dt / ΔV / 极差 / 静置松弛斜率]
-    D --> E[anomaly_model<br/>物理规则(决策) + IsolationForest(发现)]
+    D --> E["anomaly_model<br/>物理规则(决策) + IsolationForest(发现)"]
     E --> F[reporter<br/>JSON / MD / PDF]
     E --> G[app.py<br/>Streamlit 大屏]
     F --> H[skill_entry.py<br/>标准 Skill 接口]
