@@ -1,5 +1,8 @@
 # battery_safety_agent
 
+[![tests](https://github.com/storycatmeme-maker/battery_safety_agent/actions/workflows/ci.yml/badge.svg)](https://github.com/storycatmeme-maker/battery_safety_agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **储能系统电芯一致性巡检与安全诊断 Skill** —— 面向真实电站/BMS 的工业级电芯安全诊断工具链。
 用**两套真实公开数据集**（NASA PCoE + 马里兰大学 CALCE）验证，实现
 “数据清洗 → 机理特征 → 双引擎异常判定 → 分级预警 → 结构化报告 → 可视化大屏”全链路。
