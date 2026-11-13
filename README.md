@@ -52,6 +52,10 @@ pip install -r requirements.txt
 streamlit run app.py              # 可视化大屏
 ```
 
+> **开箱即跑**：仓库内置 `data/demo/nasa_pack_demo_small.csv`（59,581 行 / 3.2MB），
+> 克隆后**无需下载原始数据即可启动大屏**——`app.py` 会自动回退到该文件。
+> 需要完整数据时再按第四节下载 NASA 原始 `.mat` 并运行 `scripts/prepare_nasa_data.py`。
+
 命令行诊断与复现实验：
 
 ```bash
@@ -78,6 +82,15 @@ pytest -q                                   # 19 项测试
 | 采样周期硬编码假设 | CALCE 为 30s 采样，被 5s 断点阈值判定为“通讯离线”，53 万行数据被误剔只剩 1 万行 | **自适应阈值**：采样周期超过阈值时等比放大 |
 | 时间戳未对齐 | 两电芯采样时刻差 0.036s，同一时刻仅剩单颗电芯，ΔV 恒为 0，AI 100% 误报 | **公共时间网格对齐** + 特征层离散化防护 |
 | 跨段差分伪影 | 段拼接处 3 颗电芯在 2s 内同时“跳温” +1°C，被判为热失控前兆（dT/dt 7.15°C/min） | **斜率限定在同段内**计算，假温升 23 行 → 0 行 |
+
+## 作品产出
+
+| 产物 | 路径 | 说明 |
+|---|---|---|
+| 诊断 Demo 动图 | `docs/demo_thermal.gif` | 热失控前兆注入 → 二级预警的完整演示 |
+| **一页纸分析报告（示例）** | `docs/电池组健康度分析报告_示例.pdf` | A4 横向单页：结论先行 + 关键指标 + 容量衰减/压差趋势图 |
+| 消融实验对照表 | `reports/ablation_study.md`（运行脚本生成） | 5 组配置 × 2 场景 |
+| 诊断报告（JSON/MD/PDF） | `reports/`（运行 `skill_entry.py` 生成） | 标准结构，可供其他系统消费 |
 
 ## 五、双引擎分工（本项目最关键的设计决策）
 
@@ -205,7 +218,11 @@ battery_safety_agent/
 > 工况抑制策略、跨数据集隐藏假设的发现与修复，都是我逐项跑实验调出来的**——
 > 例如我通过消融实验发现“AI 否决权会导致漏报”，才改成现在的分层判定。
 
-## 十二、引用
+## 十二、许可证
+
+本项目基于 [MIT License](LICENSE) 开源，欢迎学习与二次开发。
+
+## 十三、引用
 
 - Saha, B., & Goebel, K. (2007). *Battery Data Set*, NASA Prognostics Data Repository.
 - CALCE Battery Research Group, University of Maryland. *CS2 Battery Data*.

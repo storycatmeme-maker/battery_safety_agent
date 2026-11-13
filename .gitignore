@@ -17,6 +17,10 @@ data/raw/*.csv
 data/raw/calce/
 data/processed/*.csv
 
+# 个人与学习材料（不入公开仓库）
+resume/
+excel_practice/
+
 # 报告与输出（运行 skill_entry.py 自动生成）
 reports/
 

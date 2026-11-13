@@ -111,7 +111,9 @@ def load_segments(cell_name: str) -> list:
             tmp = _data_field(cyc, "Temperature_measured", "temperature_measured", "temp")
             if v.size == 0 or i.size == 0 or tmp.size == 0:
                 continue
-            cap = _capacity_of_cell(cell, k) if phase == "discharge" else float("nan")
+            # ★ 该镜像数据集没有 summary 字段，容量在 cycle['data']['Capacity'] 里（最后一个值是累计放电容量）
+            cap_arr = _data_field(cyc, "Capacity") if phase == "discharge" else np.array([])
+            cap = float(cap_arr[-1]) if cap_arr.size else float("nan")
             cnt[phase] += 1
             segments.append((cell_name, cnt[phase], phase, t, v, i, tmp, cap))
         except Exception as exc:  # 单段异常不阻塞整体

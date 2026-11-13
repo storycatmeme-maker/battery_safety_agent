@@ -36,6 +36,9 @@ from src.preprocessor import BatteryPreprocessor  # noqa: E402
 from src.reporter import BatterySafetyReporter  # noqa: E402
 
 DEFAULT_DATA = ROOT / "data" / "processed" / "nasa_pack_demo.csv"
+# 若未生成完整演示数据，则回退到仓库内的小型演示数据（开箱可运行）
+if not DEFAULT_DATA.exists():
+    DEFAULT_DATA = ROOT / "data" / "demo" / "nasa_pack_demo_small.csv"
 REPORTS_DIR = ROOT / "reports"
 
 st.set_page_config(page_title="储能电芯安全诊断大屏", page_icon="🔋", layout="wide")
@@ -184,10 +187,13 @@ def plot_series(cleaned: pd.DataFrame, scored: pd.DataFrame, t0: float, t1: floa
 
 def plot_features(scored: pd.DataFrame, t0: float, t1: float) -> go.Figure:
     f = scored[(scored["timestamp"] >= t0) & (scored["timestamp"] <= t1)]
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        subplot_titles=("温升速率 dT/dt (°C/min)", "中位数电压差 ΔV (V)",
-                                        "AI 异常分数"),
-                        vertical_spacing=0.06)
+    has_relax = "relax_dV_dt" in f.columns and f["relax_dV_dt"].notna().any()
+    rows = 4 if has_relax else 3
+    titles = ["温升速率 dT/dt (°C/min)", "中位数电压差 ΔV (V)", "AI 异常分数"]
+    if has_relax:
+        titles.append("静置自松弛斜率 dV/dt (V/min)")
+    fig = make_subplots(rows=rows, cols=1, shared_xaxes=True,
+                        subplot_titles=tuple(titles), vertical_spacing=0.055)
     for cid in sorted(f["cell_id"].unique()):
         d = _downsample(f[f["cell_id"] == cid])
         fig.add_trace(go.Scatter(x=d["timestamp"], y=d["dT_dt"], mode="lines",
@@ -201,8 +207,17 @@ def plot_features(scored: pd.DataFrame, t0: float, t1: float) -> go.Figure:
                                  name=cid, legendgroup=cid, showlegend=False,
                                  line=dict(width=1)),
                       row=3, col=1)
-    fig.update_layout(height=560, margin=dict(l=40, r=20, t=50, b=30),
-                      hovermode="x unified", legend=dict(orientation="h", y=1.12))
+        if has_relax:
+            dr = d[d["relax_dV_dt"].notna()]
+            if not dr.empty:
+                fig.add_trace(go.Scatter(x=dr["timestamp"], y=dr["relax_dV_dt"],
+                                         mode="markers", name=cid, legendgroup=cid,
+                                         showlegend=False,
+                                         marker=dict(size=4, symbol="circle")),
+                              row=4, col=1)
+    fig.update_layout(height=720 if has_relax else 560,
+                      margin=dict(l=40, r=20, t=50, b=30),
+                      hovermode="x unified", legend=dict(orientation="h", y=1.09))
     return fig
 
 
@@ -302,6 +317,11 @@ with tab1:
 
 with tab2:
     st.plotly_chart(plot_features(scored, t0, t1), use_container_width=True)
+    st.caption(
+        "第 4 张图为**静置自松弛斜率**：只统计“充电结束→静置”600s 内的样本。"
+        "健康电芯静置时端电压缓慢回落趋于稳定；若存在微短路/析锂，端电压会异常快速跌落"
+        "（注入验证：−15mV/min 的模拟微短路使该电芯斜率由 0 变为 −14.9mV/min，对照组不受影响）。"
+    )
 
 with tab3:
     q1, q2, q3, q4 = st.columns(4)
